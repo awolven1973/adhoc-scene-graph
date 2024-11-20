@@ -28,10 +28,12 @@
 	    (/ (vy vec4) (vw vec4))
 	    (/ (vz vec4) (vw vec4)))))
 
+#+NIL
 (defgeneric rm-erase-node (node)
   (:documentation "Erases retained mode portion of a node and it's descendants.  Default method does nothing.")
   (:method (node) (declare (ignore node)) (values)))
 
+#+NIL
 (defgeneric rm-draw-node (node)
   (:documentation "Redraws retained mode portion of a node and it's descendants.  Does not delete old geometry. Default method does nothing.")
   (:method (node) (declare (ignore node)) (values)))
