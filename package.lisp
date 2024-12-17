@@ -3,6 +3,7 @@
 (eval-when (:compile-toplevel :load-toplevel :execute)
 (defpackage :adhoc-scene-graph
   (:use :krma :3d-math)
+  (:shadow cl:locally)
   
   (:import-from :3dm.d
 		#:vec2
@@ -48,6 +49,12 @@
 	   #:object-id
 	   #:*object-id->object-table*
 	   #:rm-erase-node-recursively
-	   #:forget-object-recursively))
+	   #:forget-object-recursively
+	   #:locally
+	   #:as
+	   #:transform-coordinate-from-to
+	   #:transform-from-global-coordinate
+	   #:transform-to-global-coordinate
+	   #:globally))
 	   
 )

@@ -1,13 +1,15 @@
 (in-package :adhoc-scene-graph)
 
 (defvar *object-id->object-table*
-  (make-hash-table :test #'eq :weakness :value))
+  (make-hash-table :test #'eq :weakness :value :synchronized t))
 
 (defun (setf krma::object-from-id) (object id)
-  (setf (gethash id *object-id->object-table*) object))
+  (sb-ext:with-locked-hash-table (*object-id->object-table*)
+    (setf (gethash id *object-id->object-table*) object)))
 
 (defun krma::object-from-id (id)
-  (gethash id *object-id->object-table*))
+  (sb-ext:with-locked-hash-table (*object-id->object-table*)
+    (gethash id *object-id->object-table*)))
 
 ;; start the counter for lisp objects at the end of half of int so we can use foreign handled ints
 ;; as oids directly without needing to access this counter (such as parasolid tags)
@@ -65,7 +67,8 @@
   (values))
 
 (defmethod forget-object ((self selectable-mixin))
-  (remhash (the object-id) *object-id->object-table*)
+  (sb-ext:with-locked-hash-table (*object-id->object-table*)
+    (remhash (the object-id) *object-id->object-table*))
   (values))
 
 (defun node-set-model-matrix (self)
@@ -150,7 +153,9 @@
   (declare (ignore initargs))
   (prog1 (call-next-method)
     (unless (superior instance)
-      (rm-draw-node-recursively instance)
+      (bt:make-thread #'(lambda ()
+			  (rm-draw-node-recursively instance))
+		      :name "initial draw thread")
       (when (send instance scene)
 	(setf (krma::node-children (send instance scene))
 	      (append (krma::node-children (send instance scene)) (list instance)))))))
@@ -174,6 +179,12 @@
   (let ((children (send node children)))
     (mapcar #'rm-maybe-draw-node-recursively children)
     (values)))
+
+(defun rm-maybe-draw-root-in-thread (node)
+  (bt:make-thread #'(lambda ()
+		      (rm-maybe-draw-node-recursively (send node root)))
+		  :name "redraw thread"))
+  
   
 (defmethod add-to-scene (node &optional (scene (krma:default-scene)))
   (push node (krma::node-children scene))
@@ -289,6 +300,97 @@
 (defmethod untransform-global-coordinate ((vec vec3) (self node-mixin))
   (let ((vec4 (m* (vec4 (vx vec) (vy vec) (vz vec) 1) (the inverse-global-matrix))))
     (safe-euclid vec4)))
+
+;; newer api below:
+
+(defun transform-coordinate-from-to-1 (coordinate from to)
+  (declare (type 3dm.d::vec4 coordinate))
+  (if (and (not from) (not to))
+      coordinate
+      (if (not from)
+	  (m* coordinate (cl:the 3dm.d::mat4 (send to global-matrix)))
+	  (if (not to)
+	      (m* coordinate (cl:the 3dm.d::mat4 (send from inverse-global-matrix)))
+	      (if (not (eq (send from root) (send to root)))
+		  (error "Objects have no relationship.")
+		  (let* ((from-root-path (send from root-path))
+			 (to-root-path (send to root-path))
+			 (relative-path (adhoc::compute-relative-path-1 from-root-path to-root-path))
+			 (matrices (loop with matrices = ()
+					 for message in relative-path
+					 do (if (eq message 'superior)
+						(progn
+						  (push (send from inverse-matrix) matrices)
+						  (setq from (send from (eval message))))
+						(progn
+						  (setq from (send from (eval message)))
+						  (push (send from matrix) matrices)))
+					 finally (return matrices))))
+		    (loop for matrix in matrices
+			  do (setq coordinate (m* (cl:the 3dm.d::vec4 coordinate)
+						  (cl:the 3dm.d::mat4 matrix))))
+		    coordinate))))))
+
+(defgeneric transform-coordinate-from-to (coordinate from to)
+  (:documentation "function `transform-coordinate-from-to' coordinate from to --> (from or to can be nil, meaning global), returns coordinate argument which is considered in coordinate system `from' transformed into coordinate system of `to'. `from' and `to' can be any node in a tree of nodes, as long as they are in the same tree.  nil means global coordinate system, which is not necessarily the same as root."))
+
+(defmethod transform-coordinate-from-to ((coordinate 3dm.d::vec3) from to)
+  (safe-euclid (transform-coordinate-from-to-1
+		(vec4 (vx coordinate) (vy coordinate) (vz coordinate) 1.0d0)
+		from to)))
+
+(defmethod transform-coordinate-from-to ((coordinate 3dm.d::vec2) from to)
+  (safe-euclid (transform-coordinate-from-to-1
+		(vec4 (vx coordinate) (vy coordinate) 0.0d0 1.0d0)
+		from to)))
+
+
+
+(defgeneric transform-from-global-coordinate (coordinate to)
+  (:documentation "function `transform-from-global-coordinate' coordinate to is equivalent to --> transform-coordinate-from-to coordinate nil to, returns coordinate, which is considered in the global coordinate system into coordinate system of `to'"))
+
+(defmethod transform-from-global-coordinate ((coordinate 3dm.d::vec3) to)
+  (safe-euclid
+   (m* (vec4 (vx coordinate) (vy coordinate) (vz coordinate) 1.0d0)
+       (send to global-matrix))))
+
+(defmethod transform-from-global-coordinate ((coordinate 3dm.d::vec2) to)
+  (safe-euclid
+   (m* (vec4 (vx coordinate) (vy coordinate) 0.0d0 1.0d0)
+       (send to global-matrix))))
+
+
+(defgeneric transform-to-global-coordinate (coordinate from)
+  (:documentation "function `transform-to-global-coordinate' coordinate from is equivalent to --> transform-coordinate-from-to coord from nil, returns coordinate, which is consider in the coordinate system of `from' as a global coordinate"))
+
+(defmethod transform-to-global-coordinate ((coordinate 3dm.d::vec3) from)
+  (safe-euclid
+   (m* (vec4 (vx coordinate) (vy coordinate) (vz coordinate) 1.0d0)
+       (send from inverse-global-matrix))))
+
+(defmethod transform-to-global-coordinate ((coordinate 3dm.d::vec2) from)
+  (safe-euclid
+   (m* (vec4 (vx coordinate) (vy coordinate) 0.0d0 1.0d0)
+       (send from inverse-global-matrix))))
+
+(defmacro as (coordinate node)
+  "macro `as' coordinate node is equivalent to --> transform-coordinate-from-to coordinate self node, returns coordinate, considered in the coordinate system of `self', into coordinates of coordinate system of `node'.  example (as (vec3 1 1 1) part) --> in a provided input transforms (vec3 1 1 1), wrt self, into coordinate of part (or child)"
+  `(transform-coordinate-from-to ,coordinate self ,node))
+
+(defmacro locally (&rest reference-chain)
+  "macro `locally' &rest reference-chain, where node is (the ,@(butlast reference-chain)) and coordinate is (send node ,@(last reference-chain)) is equivalent to --> transform-coordinate-from-to coordinate node self, returns coordinate, considered in the coordinate system of `node' into coordinates of `self'. example: (locally last-box top-left-corner)"
+  (let ((node-sym (gensym))
+	(coordinate-sym (gensym)))
+  `(let* ((,node-sym (the ,@(butlast reference-chain)))
+	  (,coordinate-sym (send ,node-sym ,@(last reference-chain))))
+     (transform-coordinate-from-to ,coordinate-sym ,node-sym self))))
+
+(defmacro globally (coordinate)
+  "macro `globally' coordinate is equivalent to --> (as coordinate nil) or (transform-to-global-coordinate coordinate self), returns coordinate, which is considered in the coordinate system of `self' into global coordinates"
+  `(transform-to-global-coordinate ,coordinate self))
+
+
+
 
 
 
