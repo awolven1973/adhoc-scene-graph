@@ -63,9 +63,6 @@
   (setf (krma::object-from-id (the object-id)) self)
   (values))
 
-(defmethod forget-object (self)
-  (values))
-
 (defmethod forget-object ((self selectable-mixin))
   (sb-ext:with-locked-hash-table (*object-id->object-table*)
     (remhash (the object-id) *object-id->object-table*))
@@ -92,21 +89,22 @@
 
 (defobject node-mixin ()
   :slots
-  ((redraw? :initform nil)
-   (retransform? :initform nil)
-   (primitive-handles :initform ()))
+  ((primitive-handles :initform ()))
   
   :inputs
   ((visible? :visual t)
    (origin (vec3 0 0 0))
    (rotation (quat 0 0 0 1))
-   (scene :defaulting))
-
-  :default-initargs (scene (krma:default-scene))
+   (scene :defaulting (krma:default-scene)))
   
   :attributes
   ((rotation-matrix
-    (matrix-from-quaternion (the rotation)))
+    (let ((r (the rotation)))
+      (etypecase r
+	((or 3dm.d::mat4 3dm.f::mat4 3dm.rat::mat4) r)
+	(3dm.d::quat (3dm.d::matrix-from-quaternion r))
+	(3dm.f::quat (3dm.f::matrix-from-quaternion r))
+	(3dm.rat::quat (3dm.rat::matrix-from-quaternion r)))))
 
    (translation-matrix
     (let* ((origin (the origin))
@@ -133,6 +131,7 @@
 				     (typep child 'node-mixin))
 				 (the children)))))
 
+#+NIL
 (defmethod rm-draw-node :after ((node node-mixin))
   (setf (slot-value node 'redraw?) nil)
   (setf (slot-value node 'retransform?) nil)
@@ -172,18 +171,18 @@
     (mapcar #'rm-redraw-node-recursively children)
     (values)))
 
-(defun rm-maybe-draw-node-recursively (node)
+(defun refresh-rm-graphics-recursively (node)
   (when (typep node 'node-mixin)
     (unless (slot-value node 'primitive-handles)
       (rm-draw-node node)))
   (let ((children (send node children)))
-    (mapcar #'rm-maybe-draw-node-recursively children)
+    (mapcar #'refresh-rm-graphics-recursively children)
     (values)))
 
-(defun rm-maybe-draw-root-in-thread (node)
+(defmethod refresh-rm-graphics-from-root-in-new-thread ((node adhoc-mixin))
   (bt:make-thread #'(lambda ()
-		      (rm-maybe-draw-node-recursively (send node root)))
-		  :name "redraw thread"))
+		      (refresh-rm-graphics-recursively (send node root)))
+		  :name "refresh graphics thread"))
   
   
 (defmethod add-to-scene (node &optional (scene (krma:default-scene)))
@@ -244,6 +243,15 @@
   (rm-erase-node self)
   (mapcar #'rm-erase-node-recursively (the children))
   (values))
+
+(defmethod rm-draw-node :around ((self node-mixin))
+  (handler-bind ((error #'(lambda (e)
+			    (let ((report (make-instance 'error-report
+							 :node self
+							 :error e)))
+							 
+			      (rm-draw-node report)))))
+    (call-next-method)))
 
 (defmethod rm-draw-node :before ((self node-mixin))
   (rm-retransform-node self)
