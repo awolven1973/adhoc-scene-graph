@@ -89,13 +89,13 @@
 
 (defobject node-mixin ()
   :slots
-  ((primitive-handles :initform ()))
+  ((primitive-handles :initform ())
+   (scene))
   
   :inputs
   ((visible? :visual t)
    (origin (vec3 0 0 0))
-   (rotation (quat 0 0 0 1))
-   (scene :defaulting (krma:default-scene)))
+   (rotation (quat 0 0 0 1)))
   
   :attributes
   ((rotation-matrix
@@ -147,6 +147,20 @@
   (rm-redraw-node instance)
   (values))
 
+(defmethod initialize-instance :before ((instance node-mixin) &rest initargs
+					&key (scene (krma:default-scene))
+					  (superior nil)
+					&allow-other-keys)
+  (declare (ignore initargs))
+  
+  (if (null superior)
+      
+      (setf (slot-value instance 'scene) scene)
+      
+      (setf (slot-value instance 'scene) (slot-value superior 'scene)))
+  
+  (values))  
+
 (defmethod initialize-instance :around ((instance node-mixin) &rest initargs
 					&key &allow-other-keys)
   (declare (ignore initargs))
@@ -175,14 +189,22 @@
   (when (typep node 'node-mixin)
     (unless (slot-value node 'primitive-handles)
       (rm-draw-node node)))
-  (let ((children (send node children)))
-    (mapcar #'refresh-rm-graphics-recursively children)
-    (values)))
+  (handler-case
+      ;; should this be node-children and not just children?
+    (let ((children (send node children)))
+      (mapcar #'refresh-rm-graphics-recursively children)
+      (values))
+    (error (e) (declare (ignore e)) nil)))
 
-(defmethod refresh-rm-graphics-from-root-in-new-thread ((node adhoc-mixin))
-  (bt:make-thread #'(lambda ()
-		      (refresh-rm-graphics-recursively (send node root)))
-		  :name "refresh graphics thread"))
+(defmethod maybe-refresh-rm-graphics-from-root-in-new-thread ((node adhoc-mixin))
+  (let ((root (send node root)))
+    (when (typep root 'node-mixin)
+      (let ((scene (send root scene)))
+	(when scene
+	  (when (member root (krma::node-children scene))
+	    (bt:make-thread #'(lambda ()
+				(refresh-rm-graphics-recursively root))
+			    :name "refresh graphics thread")))))))
   
   
 (defmethod add-to-scene (node &optional (scene (krma:default-scene)))
@@ -220,8 +242,9 @@
 (defmethod rm-retransform-node ((self node-mixin))
   (node-set-model-matrix self))
 
-(defmethod rm-retransform-node (self)
-  (values))
+;; in defgeneric
+;;(defmethod rm-retransform-node (self)
+;;  (values))
 
 (defmethod rm-erase-node ((self node-mixin))
   (when (the scene)
