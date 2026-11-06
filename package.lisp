@@ -55,6 +55,8 @@
 	   #:transform-coordinate-from-to
 	   #:transform-from-global-coordinate
 	   #:transform-to-global-coordinate
-	   #:globally))
+	   #:globally
+	   #:essential-error-report-mixin
+	   #:error-report))
 	   
 )

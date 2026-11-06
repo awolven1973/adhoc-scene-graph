@@ -127,9 +127,11 @@
 
    (inverse-global-matrix (minv (the global-matrix)))
 		    
-   (node-children (remove-if-not #'(lambda (child)
-				     (typep child 'node-mixin))
-				 (the children)))))
+   (node-children (fset:convert
+		   'fset:set
+		   (remove-if-not #'(lambda (child)
+				      (typep child 'node-mixin))
+				  (the children))))))
 
 #+NIL
 (defmethod rm-draw-node :after ((node node-mixin))
@@ -169,9 +171,10 @@
       (bt:make-thread #'(lambda ()
 			  (rm-draw-node-recursively instance))
 		      :name "initial draw thread")
-      (when (send instance scene)
-	(setf (krma::node-children (send instance scene))
-	      (append (krma::node-children (send instance scene)) (list instance)))))))
+      (let ((scene (send instance scene)))
+	(when scene
+	  (setf (krma::node-children scene)
+		(fset:with (krma::node-children scene) instance)))))))
 
 (defun rm-draw-node-recursively (node)
   (rm-draw-node node)
@@ -190,7 +193,6 @@
     (unless (slot-value node 'primitive-handles)
       (rm-draw-node node)))
   (handler-case
-      ;; should this be node-children and not just children?
     (let ((children (send node children)))
       (mapcar #'refresh-rm-graphics-recursively children)
       (values))
@@ -201,7 +203,7 @@
     (when (typep root 'node-mixin)
       (let ((scene (send root scene)))
 	(when scene
-	  (when (member root (krma::node-children scene))
+	  (when (fset:contains? (krma::node-children scene) root)
 	    (bt:make-thread #'(lambda ()
 				(refresh-rm-graphics-recursively root))
 			    :name "refresh graphics thread")))))))
@@ -213,13 +215,14 @@
 
 (defun remove-from-scene (node &optional (scene (krma:default-scene)))
   (setf (krma::node-children scene)
-	(remove node (krma::node-children scene)))
+	(fset:less (krma::node-children scene) node))
   (values))
 
 
 (defmethod forget-object-recursively ((self node-mixin))
   (forget-object self)
-  (mapcar #'forget-object-recursively (the node-children))
+  (fset:do-set (node (the node-children))
+    (forget-object-recursively node))
   (values))
 
 (defobject group-owner-mixin (group-mixin)
@@ -268,13 +271,17 @@
   (values))
 
 (defmethod rm-draw-node :around ((self node-mixin))
-  (handler-bind ((error #'(lambda (e)
-			    (let ((report (make-instance 'error-report
-							 :node self
-							 :error e)))
-							 
-			      (rm-draw-node report)))))
-    (call-next-method)))
+  (catch 'suppressed
+    (handler-bind ((error #'(lambda (e)
+			      (bt:release-recursive-lock (slot-value self 'adhoc::root-lock))
+			      (setf (adhoc::suppressed? self) t)
+			      (let ((report (make-instance 'error-report
+							   :node self
+							   :error e)))
+				
+				(rm-draw-node report))
+			      (throw 'suppressed (values)))))
+      (call-next-method))))
 
 (defmethod rm-draw-node :before ((self node-mixin))
   (rm-retransform-node self)
@@ -420,13 +427,9 @@
   "macro `globally' coordinate is equivalent to --> (as coordinate nil) or (transform-to-global-coordinate coordinate self), returns coordinate, which is considered in the coordinate system of `self' into global coordinates"
   `(transform-to-global-coordinate ,coordinate self))
 
+(defobject essential-error-report-mixin ()
+  :slots
+  ((node :initarg :node)
+   (error :initarg :error)))
 
-
-
-
-
-
-
-
-
-
+(defobject error-report (essential-error-report-mixin)) ;; a stub
