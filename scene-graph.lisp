@@ -275,11 +275,9 @@
     (handler-bind ((error #'(lambda (e)
 			      (bt:release-recursive-lock (slot-value self 'adhoc::root-lock))
 			      (setf (adhoc::suppressed? self) t)
-			      (let ((report (make-instance 'error-report
-							   :node self
-							   :error e)))
-				
-				(rm-draw-node report))
+			      (make-instance 'error-report
+					     :node self
+					     :error e)
 			      (throw 'suppressed (values)))))
       (call-next-method))))
 
