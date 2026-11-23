@@ -150,18 +150,25 @@
   (values))
 
 (defmethod initialize-instance :before ((instance node-mixin) &rest initargs
-					&key (scene (krma:default-scene))
+					&key (scene nil kwd-scene-present-p)
 					  (superior nil)
 					&allow-other-keys)
-  (declare (ignore initargs))
-  
   (if (null superior)
-      
-      (setf (slot-value instance 'scene) scene)
-      
-      (setf (slot-value instance 'scene) (slot-value superior 'scene)))
+
+      (progn
+	(unless kwd-scene-present-p
+	  (let ((s (getf initargs 'scene :%%unbound)))
+	    (if (eq s :%%unbound)
+		(setq scene (krma::default-scene))
+		(setq scene s))))
+	
+	(setf (slot-value instance 'scene) scene))
+
+      (progn (unless (typep superior 'node-mixin)
+	       (error "A node's superior must be another node or nil, got ~S" superior))
+	     (setf (slot-value instance 'scene) (slot-value superior 'scene))))
   
-  (values))  
+  (values))
 
 (defmethod initialize-instance :around ((instance node-mixin) &rest initargs
 					&key &allow-other-keys)
@@ -277,7 +284,10 @@
 			      (setf (adhoc::suppressed? self) t)
 			      (make-instance 'error-report
 					     :node self
-					     :error e)
+					     :error e
+					     :backtrace (with-output-to-string (stream)
+							  (let ((*debug-io* stream))
+							    (sb-debug:print-backtrace))))
 			      (throw 'suppressed (values)))))
       (call-next-method))))
 
@@ -356,11 +366,11 @@
 					 for message in relative-path
 					 do (if (eq message 'superior)
 						(progn
-						  (push (send from inverse-matrix) matrices)
+						  (push (send from matrix) matrices)
 						  (setq from (send from (eval message))))
 						(progn
 						  (setq from (send from (eval message)))
-						  (push (send from matrix) matrices)))
+						  (push (send from inverse-matrix) matrices)))
 					 finally (return matrices))))
 		    (loop for matrix in matrices
 			  do (setq coordinate (m* (cl:the 3dm.d::vec4 coordinate)
@@ -388,12 +398,12 @@
 (defmethod transform-from-global-coordinate ((coordinate 3dm.d::vec3) to)
   (safe-euclid
    (m* (vec4 (vx coordinate) (vy coordinate) (vz coordinate) 1.0d0)
-       (send to global-matrix))))
+       (send to inverse-global-matrix))))
 
 (defmethod transform-from-global-coordinate ((coordinate 3dm.d::vec2) to)
   (safe-euclid
    (m* (vec4 (vx coordinate) (vy coordinate) 0.0d0 1.0d0)
-       (send to global-matrix))))
+       (send to inverse-global-matrix))))
 
 
 (defgeneric transform-to-global-coordinate (coordinate from)
@@ -402,12 +412,12 @@
 (defmethod transform-to-global-coordinate ((coordinate 3dm.d::vec3) from)
   (safe-euclid
    (m* (vec4 (vx coordinate) (vy coordinate) (vz coordinate) 1.0d0)
-       (send from inverse-global-matrix))))
+       (send from global-matrix))))
 
 (defmethod transform-to-global-coordinate ((coordinate 3dm.d::vec2) from)
   (safe-euclid
    (m* (vec4 (vx coordinate) (vy coordinate) 0.0d0 1.0d0)
-       (send from inverse-global-matrix))))
+       (send from global-matrix))))
 
 (defmacro as (coordinate node)
   "macro `as' coordinate node is equivalent to --> transform-coordinate-from-to coordinate self node, returns coordinate, considered in the coordinate system of `self', into coordinates of coordinate system of `node'.  example (as (vec3 1 1 1) part) --> in a provided input transforms (vec3 1 1 1), wrt self, into coordinate of part (or child)"
@@ -428,6 +438,7 @@
 (defobject essential-error-report-mixin ()
   :slots
   ((node :initarg :node)
-   (error :initarg :error)))
+   (error :initarg :error)
+   (backtrace :initarg :backtrace)))
 
 (defobject error-report (essential-error-report-mixin)) ;; a stub
